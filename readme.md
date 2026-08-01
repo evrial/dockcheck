@@ -1,5 +1,6 @@
 Fastest and simplest Docker image update checker.
 No dependencies, only native Docker API calls.
+No rate limits for checking, only HEAD remote calls.
 Doing only one thing, and doing it well.
 
 Building:
@@ -23,11 +24,13 @@ Usage of ./dockcheck:
 ```
 
 ```
-dockcheck caddy
-Checking 1 containers for updates...
+dockcheck -a -p
+Checking 2 containers for updates...
 
-Containers on latest version:
-  • caddy
+CONTAINER            IMAGE                               STATUS               LOOKUP TIME
+---------            -----                               ------               -----------
+homeassistant        ghcr.io/home-assistant/home-as...   up-to-date           533ms
+caddy                caddy:latest                        up-to-date           903ms
 
 No updates available.
 ```
