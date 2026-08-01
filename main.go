@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -50,11 +51,46 @@ type CheckResult struct {
 	Error            error
 }
 
+// Custom HTTP Transport to inject Token for Hawser Proxy
+type tokenAuthTransport struct {
+	token   string
+	wrapped http.RoundTripper
+}
+
+func (t *tokenAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set("X-Hawser-Token", t.token)
+	return t.wrapped.RoundTrip(req)
+}
+
+func initDockerClient() (*client.Client, error) {
+	opts := []client.Opt{
+		client.FromEnv,
+		client.WithAPIVersionNegotiation(),
+	}
+
+	// Read Hawser token from environment
+	token := os.Getenv("HAWSER_TOKEN")
+
+	// If a token is provided, attach custom HTTP client with Bearer header
+	if token != "" {
+		customClient := &http.Client{
+			Transport: &tokenAuthTransport{
+				token:   token,
+				wrapped: http.DefaultTransport,
+			},
+		}
+		opts = append(opts, client.WithHTTPClient(customClient))
+	}
+
+	return client.NewClientWithOpts(opts...)
+}
+
 func main() {
 	cfg := parseFlags()
 
-	// Initialize Native Docker API Client
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	// Initialize Native Docker API Client with Hawser Token support
+	cli, err := initDockerClient()
 	if err != nil {
 		fmt.Printf("%sError connecting to Docker Engine API: %v%s\n", ColorRed, err, ColorReset)
 		os.Exit(1)
