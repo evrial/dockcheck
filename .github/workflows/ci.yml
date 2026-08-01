@@ -22,7 +22,7 @@ jobs:
 
       - name: Cache golangci-lint binary
         id: cache-golangci-lint
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/go/bin/golangci-lint
           key: ${{ runner.os }}-golangci-lint-latest-${{ hashFiles('go.mod') }}
@@ -49,7 +49,7 @@ jobs:
 
       - name: Cache govulncheck binary
         id: cache-govulncheck
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/go/bin/govulncheck
           key: ${{ runner.os }}-govulncheck-latest-${{ hashFiles('go.mod') }}
