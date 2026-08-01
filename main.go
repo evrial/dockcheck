@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/moby/term"
@@ -43,7 +44,9 @@ type Config struct {
 type CheckResult struct {
 	ContainerSummary container.Summary
 	ContainerName    string
+	ImageName        string
 	Status           string // "up-to-date", "update-available", "error"
+	Duration         time.Duration
 	Error            error
 }
 
@@ -87,6 +90,10 @@ func main() {
 
 	fmt.Printf("Checking %d containers for updates...\n\n", len(targetContainers))
 
+	// Print Table Header immediately
+	fmt.Printf("%-20s %-35s %-20s %-12s\n", "CONTAINER", "IMAGE", "STATUS", "LOOKUP TIME")
+	fmt.Printf("%-20s %-35s %-20s %-12s\n", "---------", "-----", "------", "-----------")
+
 	// 2. Worker Pool for Async Registry Lookups
 	results := make(chan CheckResult, len(targetContainers))
 	semaphore := make(chan struct{}, cfg.MaxAsync)
@@ -104,45 +111,42 @@ func main() {
 		}(c)
 	}
 
-	wg.Wait()
-	close(results)
+	// Close results channel automatically once all workers finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
-	// 3. Process Check Results
-	var upToDate []string
-	var errorsList []string
+	// 3. Process Check Results dynamically as they arrive on the channel
 	var updatesToApply []CheckResult
+	var errorsList []CheckResult
 
 	for res := range results {
-		switch res.Status {
-		case "up-to-date":
-			upToDate = append(upToDate, res.ContainerName)
-		case "update-available":
+		printResultRowDynamic(res)
+
+		if res.Status == "update-available" {
 			updatesToApply = append(updatesToApply, res)
-		case "error":
-			errorsList = append(errorsList, fmt.Sprintf("%s (%v)", res.ContainerName, res.Error))
+		} else if res.Status == "error" {
+			errorsList = append(errorsList, res)
 		}
 	}
 
-	if len(upToDate) > 0 {
-		fmt.Printf("%sContainers on latest version:%s\n", ColorGreen, ColorReset)
-		for _, name := range upToDate {
-			fmt.Printf("  • %s\n", name)
-		}
-		fmt.Println()
-	}
+	fmt.Println()
 
+	// 4. Print Errors Below Table
 	if len(errorsList) > 0 {
-		fmt.Printf("%sContainers with errors:%s\n", ColorRed, ColorReset)
-		for _, errStr := range errorsList {
-			fmt.Printf("  • %s\n", errStr)
+		fmt.Printf("%sContainers with errors (%d):%s\n", ColorRed, len(errorsList), ColorReset)
+		for _, errRes := range errorsList {
+			fmt.Printf("  • %s: %v\n", errRes.ContainerName, errRes.Error)
 		}
 		fmt.Println()
 	}
 
+	// 5. Summarize and Prompt
 	if len(updatesToApply) > 0 {
-		fmt.Printf("%sContainers with updates available:%s\n", ColorYellow, ColorReset)
+		fmt.Printf("%sContainers with updates available (%d):%s\n", ColorYellow, len(updatesToApply), ColorReset)
 		for _, item := range updatesToApply {
-			fmt.Printf("  • %s\n", item.ContainerName)
+			fmt.Printf("  • %s (%s)\n", item.ContainerName, item.ImageName)
 		}
 		fmt.Println()
 
@@ -168,14 +172,16 @@ func main() {
 				}
 			}
 		}
-	} else {
+	} else if len(errorsList) == 0 {
 		fmt.Println("No updates available.")
 	}
 }
 
 // Inspect container and perform remote registry lookup using OCI remote specs
 func checkContainerUpdate(ctx context.Context, cli *client.Client, c container.Summary, timeout time.Duration) CheckResult {
+	start := time.Now()
 	cName := getCleanName(c)
+	imageName := c.Image
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -183,32 +189,68 @@ func checkContainerUpdate(ctx context.Context, cli *client.Client, c container.S
 	// Inspect container via API
 	inspect, _, err := cli.ImageInspectWithRaw(ctx, c.ImageID)
 	if err != nil {
-		return CheckResult{ContainerName: cName, Status: "error", Error: err}
+		return CheckResult{ContainerName: cName, ImageName: imageName, Status: "error", Duration: time.Since(start), Error: err}
 	}
 
 	if len(inspect.RepoDigests) == 0 {
-		return CheckResult{ContainerName: cName, Status: "error", Error: fmt.Errorf("no local repo digest found")}
+		return CheckResult{ContainerName: cName, ImageName: imageName, Status: "error", Duration: time.Since(start), Error: fmt.Errorf("no local repo digest found")}
 	}
 
 	ref, err := name.ParseReference(c.Image)
 	if err != nil {
-		return CheckResult{ContainerName: cName, Status: "error", Error: err}
+		return CheckResult{ContainerName: cName, ImageName: imageName, Status: "error", Duration: time.Since(start), Error: err}
 	}
 
-	desc, err := remote.Get(ref, remote.WithContext(ctx))
+	// remote.Head returns top-level descriptor without fetching manifest bodies
+	desc, err := remote.Head(ref,
+		remote.WithContext(ctx),
+		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+	)
 	if err != nil {
-		return CheckResult{ContainerName: cName, Status: "error", Error: err}
+		return CheckResult{ContainerName: cName, ImageName: imageName, Status: "error", Duration: time.Since(start), Error: err}
 	}
 
 	remoteDigest := desc.Digest.String()
+	duration := time.Since(start)
 
 	for _, localDigest := range inspect.RepoDigests {
 		if strings.Contains(localDigest, remoteDigest) {
-			return CheckResult{ContainerName: cName, Status: "up-to-date"}
+			return CheckResult{ContainerName: cName, ImageName: imageName, Status: "up-to-date", Duration: duration}
 		}
 	}
 
-	return CheckResult{ContainerSummary: c, ContainerName: cName, Status: "update-available"}
+	return CheckResult{ContainerSummary: c, ContainerName: cName, ImageName: imageName, Status: "update-available", Duration: duration}
+}
+
+// Prints immediately to stdout with fixed padding
+func printResultRowDynamic(r CheckResult) {
+	durationStr := fmt.Sprintf("%dms", r.Duration.Milliseconds())
+	if r.Duration.Seconds() >= 1.0 {
+		durationStr = fmt.Sprintf("%.2fs", r.Duration.Seconds())
+	}
+
+	// Truncate overly long container or image strings for neat output
+	cName := r.ContainerName
+	if len(cName) > 18 {
+		cName = cName[:15] + "..."
+	}
+
+	imgName := r.ImageName
+	if len(imgName) > 33 {
+		imgName = imgName[:30] + "..."
+	}
+
+	var statusColored string
+	switch r.Status {
+	case "up-to-date":
+		statusColored = fmt.Sprintf("%s%-20s%s", ColorGreen, r.Status, ColorReset)
+	case "update-available":
+		statusColored = fmt.Sprintf("%s%-20s%s", ColorYellow, r.Status, ColorReset)
+	case "error":
+		statusColored = fmt.Sprintf("%s%-20s%s", ColorRed, "error", ColorReset)
+	}
+
+	fmt.Printf("%-20s %-35s %s %-12s\n", cName, imgName, statusColored, durationStr)
 }
 
 // Replaces `docker compose pull` & `docker compose up` using direct Docker API calls
