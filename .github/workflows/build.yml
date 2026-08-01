@@ -16,6 +16,8 @@ jobs:
   build:
     name: Build Binaries
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # Required for actions/checkout and repository read access
 
     strategy:
       matrix:
