@@ -223,7 +223,7 @@ func checkContainerUpdate(ctx context.Context, cli *client.Client, c container.S
 	defer cancel()
 
 	// Inspect container via API
-	inspect, _, err := cli.ImageInspectWithRaw(ctx, c.ImageID)
+	inspect, err := cli.ImageInspect(ctx, c.ImageID)
 	if err != nil {
 		return CheckResult{ContainerName: cName, ImageName: imageName, Status: "error", Duration: time.Since(start), Error: err}
 	}
@@ -337,7 +337,7 @@ func updateContainerNative(ctx context.Context, cli *client.Client, summary cont
 		containerInfo.HostConfig, // Retains Mounts, Ports, Restart Policy, etc.
 		netConfig,                // Pass network configurations
 		nil,
-		containerInfo.Name,       // Same container name
+		containerInfo.Name, // Same container name
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create new container: %w", err)
