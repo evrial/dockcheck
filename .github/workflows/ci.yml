@@ -52,10 +52,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin/govulncheck
-          key: ${{ runner.os }}-govulncheck-${{ hashFiles('go.mod') }}
-          restore-keys: |
-            ${{ runner.os }}-govulncheck-
-          save-always: true
+          key: ${{ runner.os }}-govulncheck-latest-${{ hashFiles('go.mod') }}
 
       - name: Install govulncheck
         if: steps.cache-govulncheck.outputs.cache-hit != 'true'
