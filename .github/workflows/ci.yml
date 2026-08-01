@@ -20,7 +20,15 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      - name: Cache golangci-lint binary
+        id: cache-golangci-lint
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin/golangci-lint
+          key: ${{ runner.os }}-golangci-lint-latest-${{ hashFiles('go.mod') }}
+
       - name: Install golangci-lint
+        if: steps.cache-golangci-lint.outputs.cache-hit != 'true'
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
       - name: Run golangci-lint
@@ -39,7 +47,15 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      - name: Cache govulncheck binary
+        id: cache-govulncheck
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin/govulncheck
+          key: ${{ runner.os }}-govulncheck-latest-${{ hashFiles('go.mod') }}
+
       - name: Install govulncheck
+        if: steps.cache-govulncheck.outputs.cache-hit != 'true'
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
       - name: Run govulncheck
