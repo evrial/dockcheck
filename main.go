@@ -10,15 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/client/pkg/jsonmessage"
 	"github.com/moby/term"
 )
 
@@ -66,7 +64,6 @@ func (t *tokenAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 func initDockerClient() (*client.Client, error) {
 	opts := []client.Opt{
 		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
 	}
 
 	// Read Hawser token from environment
@@ -83,7 +80,7 @@ func initDockerClient() (*client.Client, error) {
 		opts = append(opts, client.WithHTTPClient(customClient))
 	}
 
-	return client.NewClientWithOpts(opts...)
+	return client.New(opts...)
 }
 
 func main() {
@@ -100,14 +97,14 @@ func main() {
 	ctx := context.Background()
 
 	// 1. Fetch containers via Docker API
-	containers, err := cli.ContainerList(ctx, container.ListOptions{All: cfg.IncludeAll})
+	res, err := cli.ContainerList(ctx, client.ContainerListOptions{All: cfg.IncludeAll})
 	if err != nil {
 		fmt.Printf("%sError listing containers: %v%s\n", ColorRed, err, ColorReset)
 		os.Exit(1)
 	}
 
 	var targetContainers []container.Summary
-	for _, c := range containers {
+	for _, c := range res.Items {
 		cName := getCleanName(c)
 
 		if cfg.Filter != "" && !strings.Contains(cName, cfg.Filter) {
@@ -296,7 +293,7 @@ func updateContainerNative(ctx context.Context, cli *client.Client, summary cont
 
 	// 1. Native API Image Pull
 	fmt.Printf("Pulling new image: %s\n", summary.Image)
-	out, err := cli.ImagePull(ctx, summary.Image, image.PullOptions{})
+	out, err := cli.ImagePull(ctx, summary.Image, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("image pull failed: %w", err)
 	}
@@ -307,7 +304,7 @@ func updateContainerNative(ctx context.Context, cli *client.Client, summary cont
 	_ = jsonmessage.DisplayJSONMessagesStream(out, os.Stdout, termFd, isTerm, nil)
 
 	// 2. Inspect original container configuration
-	containerInfo, err := cli.ContainerInspect(ctx, summary.ID)
+	containerInfo, err := cli.ContainerInspect(ctx, summary.ID, client.ContainerInspectOptions{})
 	if err != nil {
 		return fmt.Errorf("failed inspecting container: %w", err)
 	}
@@ -315,37 +312,35 @@ func updateContainerNative(ctx context.Context, cli *client.Client, summary cont
 	// 3. Stop running container gracefully
 	fmt.Printf("Stopping container %s...\n", cName)
 	stopTimeout := 15
-	if err := cli.ContainerStop(ctx, summary.ID, container.StopOptions{Timeout: &stopTimeout}); err != nil {
+	if _, err := cli.ContainerStop(ctx, summary.ID, client.ContainerStopOptions{Timeout: &stopTimeout}); err != nil {
 		return fmt.Errorf("failed to stop container: %w", err)
 	}
 
 	// 4. Remove old container entity (keeping volumes attached)
 	fmt.Printf("Removing old container entity %s...\n", cName)
-	if err := cli.ContainerRemove(ctx, summary.ID, container.RemoveOptions{Force: false}); err != nil {
+	if _, err := cli.ContainerRemove(ctx, summary.ID, client.ContainerRemoveOptions{Force: false}); err != nil {
 		return fmt.Errorf("failed to remove old container: %w", err)
 	}
 
 	// 5. Re-create container with identical original state using new image
 	fmt.Printf("Re-creating container %s...\n", cName)
 	netConfig := &network.NetworkingConfig{
-		EndpointsConfig: containerInfo.NetworkSettings.Networks,
+		EndpointsConfig: containerInfo.Container.NetworkSettings.Networks,
 	}
 
-	newContainer, err := cli.ContainerCreate(
-		ctx,
-		containerInfo.Config,     // Retains Env, Labels, Cmd, Entrypoint, etc.
-		containerInfo.HostConfig, // Retains Mounts, Ports, Restart Policy, etc.
-		netConfig,                // Pass network configurations
-		nil,
-		containerInfo.Name, // Same container name
-	)
+	newContainer, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Name:             containerInfo.Container.Name,
+		Config:           containerInfo.Container.Config,
+		HostConfig:       containerInfo.Container.HostConfig,
+		NetworkingConfig: netConfig,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create new container: %w", err)
 	}
 
 	// 6. Start updated container entity
 	fmt.Printf("Starting container %s...\n", cName)
-	if err := cli.ContainerStart(ctx, newContainer.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, newContainer.ID, client.ContainerStartOptions{}); err != nil {
 		return fmt.Errorf("failed starting container: %w", err)
 	}
 
@@ -356,19 +351,20 @@ func updateContainerNative(ctx context.Context, cli *client.Client, summary cont
 func pruneImagesNative(ctx context.Context, cli *client.Client) {
 	fmt.Printf("\n%sPruning dangling images...%s\n", ColorTeal, ColorReset)
 
-	// Filter for dangling images (`dangling=true`)
-	pruneFilters := filters.NewArgs()
+	pruneFilters := client.Filters{}
 	pruneFilters.Add("dangling", "true")
 
-	report, err := cli.ImagesPrune(ctx, pruneFilters)
+	report, err := cli.ImagePrune(ctx, client.ImagePruneOptions{
+		Filters: pruneFilters,
+	})
 	if err != nil {
 		fmt.Printf("%sFailed to prune images: %v%s\n", ColorRed, err, ColorReset)
 		return
 	}
 
-	if len(report.ImagesDeleted) > 0 {
-		var reclaimedMB float64 = float64(report.SpaceReclaimed) / (1024 * 1024)
-		fmt.Printf("%sDeleted %d dangling image(s), reclaimed %.2f MB.%s\n", ColorGreen, len(report.ImagesDeleted), reclaimedMB, ColorReset)
+	if len(report.Report.ImagesDeleted) > 0 {
+		var reclaimedMB float64 = float64(report.Report.SpaceReclaimed) / (1024 * 1024)
+		fmt.Printf("%sDeleted %d dangling image(s), reclaimed %.2f MB.%s\n", ColorGreen, len(report.Report.ImagesDeleted), reclaimedMB, ColorReset)
 	} else {
 		fmt.Println("No dangling images to prune.")
 	}
