@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/google/go-containerregistry v0.21.9
-	github.com/moby/moby/api v1.55.0
+	github.com/moby/moby/api v1.56.1
 	github.com/moby/moby/client v0.5.1
 	github.com/moby/term v0.5.2
 )
