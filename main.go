@@ -92,7 +92,9 @@ func main() {
 		fmt.Printf("%sError connecting to Docker Engine API: %v%s\n", ColorRed, err, ColorReset)
 		os.Exit(1)
 	}
-	defer cli.Close()
+	defer func() {
+		_ = cli.Close()
+	}()
 
 	ctx := context.Background()
 
@@ -157,9 +159,10 @@ func main() {
 	for res := range results {
 		printResultRowDynamic(res)
 
-		if res.Status == "update-available" {
+		switch res.Status {
+		case "update-available":
 			updatesToApply = append(updatesToApply, res)
-		} else if res.Status == "error" {
+		case "error":
 			errorsList = append(errorsList, res)
 		}
 	}
@@ -297,7 +300,9 @@ func updateContainerNative(ctx context.Context, cli *client.Client, summary cont
 	if err != nil {
 		return fmt.Errorf("image pull failed: %w", err)
 	}
-	defer out.Close()
+	defer func() {
+		_ = out.Close()
+	}()
 
 	// Format pull progress output to terminal cleanly
 	termFd, isTerm := term.GetFdInfo(os.Stdout)
@@ -363,7 +368,7 @@ func pruneImagesNative(ctx context.Context, cli *client.Client) {
 	}
 
 	if len(report.Report.ImagesDeleted) > 0 {
-		var reclaimedMB float64 = float64(report.Report.SpaceReclaimed) / (1024 * 1024)
+		reclaimedMB := float64(report.Report.SpaceReclaimed) / (1024 * 1024)
 		fmt.Printf("%sDeleted %d dangling image(s), reclaimed %.2f MB.%s\n", ColorGreen, len(report.Report.ImagesDeleted), reclaimedMB, ColorReset)
 	} else {
 		fmt.Println("No dangling images to prune.")

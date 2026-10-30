@@ -10,32 +10,18 @@ permissions:
   contents: read
 
 jobs:
-  lint:
-    name: Lint
+  golangci:
+    name: lint
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
-          go-version-file: 'go.mod'
-          cache: true
-
-      - name: Cache golangci-lint binary
-        id: cache-golangci-lint
-        uses: actions/cache@v6
+          go-version: stable
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
         with:
-          path: ~/go/bin/golangci-lint
-          key: ${{ runner.os }}-golangci-lint-latest-${{ hashFiles('go.mod') }}
-
-      - name: Install golangci-lint
-        if: steps.cache-golangci-lint.outputs.cache-hit != 'true'
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-
-      - name: Run golangci-lint
-        run: golangci-lint run ./...
+          version: latest
 
   vulncheck:
     name: Security Vulnerability Check
